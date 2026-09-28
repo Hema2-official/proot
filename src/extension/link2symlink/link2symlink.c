@@ -866,14 +866,6 @@ static int handle_sysexit_end(Extension *extension)
 
 	sysnum = get_sysnum(tracee, ORIGINAL);
 
-	#ifdef USERLAND
-		if ((get_sysnum(tracee, CURRENT) == PR_fstat) || (get_sysnum(tracee, CURRENT) == PR_fstat64))
-			return 0;
-
-		if (((sysnum == PR_fstat) || (sysnum == PR_fstat64)) && (get_sysnum(tracee, CURRENT) == PR_readlinkat))
-			return 0;
-	#endif
-
 	switch (sysnum) {
 
 	case PR_fstatat64:                 //int fstatat(int dirfd, const char *pathname, struct stat *buf, int flags);
@@ -902,23 +894,14 @@ static int handle_sysexit_end(Extension *extension)
 			return 0;
 
 		if (sysnum == PR_fstat64 || sysnum == PR_fstat) {
-			#ifndef USERLAND
-				status = readlink_proc_pid_fd(tracee->pid, peek_reg(tracee, MODIFIED, SYSARG_1), original);
-				if (status < 0) {
-					VERBOSE(tracee, 3, "link2symlink: readlink_proc_pid_fd failed, status=%d", status);
-					return 0; // Don't alter syscall result
-				}
-				if (strlen(original) > strlen(DELETED_SUFFIX) &&
-						strcmp(original + strlen(original) - strlen(DELETED_SUFFIX), DELETED_SUFFIX) == 0)
-					original[strlen(original) - strlen(DELETED_SUFFIX)] = '\0';
-			#endif
-			#ifdef USERLAND
-				size = read_string(tracee, original, peek_reg(tracee, CURRENT, SYSARG_2), PATH_MAX);
-				if (size < 0)
-					return size;
-				if (size >= PATH_MAX)
-					return -ENAMETOOLONG;
-			#endif
+			status = readlink_proc_pid_fd(tracee->pid, peek_reg(tracee, MODIFIED, SYSARG_1), original);
+			if (status < 0) {
+				VERBOSE(tracee, 3, "link2symlink: readlink_proc_pid_fd failed, status=%d", status);
+				return 0; // Don't alter syscall result
+			}
+			if (strlen(original) > strlen(DELETED_SUFFIX) &&
+					strcmp(original + strlen(original) - strlen(DELETED_SUFFIX), DELETED_SUFFIX) == 0)
+				original[strlen(original) - strlen(DELETED_SUFFIX)] = '\0';
 		} else {
 			if (sysnum == PR_fstatat64 || sysnum == PR_newfstatat)
 				sysarg_path = SYSARG_2;
@@ -1067,6 +1050,23 @@ static void remember_opened_link(Extension *extension, const char host_path[PATH
 	tracee->restart_how = PTRACE_SYSCALL;
 }
 
+/* The last host path the translation of a guest path ended with, and
+ * whether the lstat(2) it made found a symlink there (HOST_PATH).  */
+static char last_final_path[PATH_MAX];
+static bool last_final_is_symlink;
+static bool last_final_is_known = false;
+
+static void remember_final_path(const char *host_path, const HostPath *info)
+{
+	if (!info->is_final || strlen(host_path) >= PATH_MAX) {
+		return;
+	}
+	strcpy(last_final_path, host_path);
+	/* A path that doesn't exist can't be a link either.  */
+	last_final_is_symlink = info->stat != NULL && S_ISLNK(info->stat->st_mode);
+	last_final_is_known = true;
+}
+
 /**
  * When @translated_path is a faked hard-link, replace it with the
  * point it (internally) points to.
@@ -1104,8 +1104,12 @@ static void translated_path(Extension *extension, char translated_path[PATH_MAX]
 	 * path was made of, except its last component when it was asked
 	 * not to -- lstat(2), open(O_NOFOLLOW), ... -- in which case
 	 * that is done here.  The name of that link is remembered the
-	 * same way, a faked hard link is a regular file to the tracee.  */
-	if (resolve_faked_hard_link(translated_path, final) == 0) {
+	 * same way, a faked hard link is a regular file to the tracee.
+	 * Only a symlink can be a faked hard link: don't readlink a path
+	 * the translation just found to be something else.  */
+	if (!(last_final_is_known && !last_final_is_symlink
+	      && strcmp(translated_path, last_final_path) == 0)
+	    && resolve_faked_hard_link(translated_path, final) == 0) {
 		config = get_config(extension, true);
 		if (config != NULL)
 			strcpy(config->dereferenced_link, translated_path);
@@ -1388,29 +1392,20 @@ int link2symlink_callback(Extension *extension, ExtensionEvent event,
 		return handle_sysexit_end(extension);
 	}
 
-#ifdef USERLAND
-	/* fake_id0 emulates fstat(2) with a readlinkat(2) of
-	 * /proc/<pid>/fd/<fd> and a chained fstatat(2) of its target.  */
-	case SYSCALL_CHAINED_EXIT: {
-		Tracee *tracee = TRACEE(extension);
-		word_t sysnum = get_sysnum(tracee, ORIGINAL);
-		word_t chained_sysnum = get_sysnum(tracee, CURRENT);
-
-		if ((sysnum == PR_fstat || sysnum == PR_fstat64)
-		    && (chained_sysnum == PR_fstatat64 || chained_sysnum == PR_newfstatat))
-			return handle_sysexit_end(extension);
-		return 0;
-	}
-#endif
-
 	case GUEST_PATH: {
-		/* A new path is about to be canonicalized.  */
+		/* A new path is about to be canonicalized: forget the last
+		 * translation.  */
 		Link2SymlinkConfig *config = get_config(extension, false);
 		if (config != NULL)
 			config->dereferenced_link[0] = '\0';
+		last_final_is_known = false;
 
 		return 0;
 	}
+
+	case HOST_PATH:
+		remember_final_path((const char *) data1, (const HostPath *) data2);
+		return 0;
 
 	case SYMLINK_DEREFERENCED:
 		remember_dereferenced_link(extension, (const char *) data1, (const char *) data2);
@@ -1418,6 +1413,7 @@ int link2symlink_callback(Extension *extension, ExtensionEvent event,
 
 	case TRANSLATED_PATH:
 		translated_path(extension, (char *) data1);
+		last_final_is_known = false;
 		return 0;
 
 	case STATX_SYSCALL:

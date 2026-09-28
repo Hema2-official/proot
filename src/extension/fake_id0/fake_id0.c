@@ -338,7 +338,7 @@ static FilteredSysnum filtered_sysnums[] = {
 	{ PR_renameat2,		FILTER_SYSEXIT },
 	{ PR_symlink,		0 },
 	{ PR_symlinkat,		0 },
-	{ PR_umask,		FILTER_SYSEXIT },
+	{ PR_umask,		0 },	/* emulated at entry */
 	{ PR_unlink,		0 },
 	{ PR_unlinkat,		0 },
 	{ PR_utimensat,		0 },
@@ -358,20 +358,20 @@ static FilteredSysnum filtered_sysnums[] = {
 	{ PR_fstat,		FILTER_SYSEXIT },
 	{ PR_fstat64,		FILTER_SYSEXIT },
 	{ PR_fstatat64,		FILTER_SYSEXIT },
-	{ PR_getegid,		FILTER_SYSEXIT },
-	{ PR_getegid32,		FILTER_SYSEXIT },
-	{ PR_geteuid,		FILTER_SYSEXIT },
-	{ PR_geteuid32,		FILTER_SYSEXIT },
-	{ PR_getgid,		FILTER_SYSEXIT },
-	{ PR_getgid32,		FILTER_SYSEXIT },
-	{ PR_getgroups,		FILTER_SYSEXIT },
-	{ PR_getgroups32,	FILTER_SYSEXIT },
-	{ PR_getresgid,		FILTER_SYSEXIT },
-	{ PR_getresgid32,	FILTER_SYSEXIT },
-	{ PR_getresuid,		FILTER_SYSEXIT },
-	{ PR_getresuid32,	FILTER_SYSEXIT },
-	{ PR_getuid,		FILTER_SYSEXIT },
-	{ PR_getuid32,		FILTER_SYSEXIT },
+	{ PR_getegid,		0 },
+	{ PR_getegid32,		0 },
+	{ PR_geteuid,		0 },
+	{ PR_geteuid32,		0 },
+	{ PR_getgid,		0 },
+	{ PR_getgid32,		0 },
+	{ PR_getgroups,		0 },
+	{ PR_getgroups32,	0 },
+	{ PR_getresgid,		0 },
+	{ PR_getresgid32,	0 },
+	{ PR_getresuid,		0 },
+	{ PR_getresuid32,	0 },
+	{ PR_getuid,		0 },
+	{ PR_getuid32,		0 },
 	{ PR_getsockopt,	FILTER_SYSEXIT },
 	{ PR_lchown,		FILTER_SYSEXIT },
 	{ PR_lchown32,		FILTER_SYSEXIT },
@@ -384,24 +384,24 @@ static FilteredSysnum filtered_sysnums[] = {
 	{ PR_oldstat,		FILTER_SYSEXIT },
 	{ PR_prctl,		FILTER_SYSEXIT },
 	{ PR_sendmsg,		0 },
-	{ PR_setfsgid,		FILTER_SYSEXIT },
-	{ PR_setfsgid32,	FILTER_SYSEXIT },
-	{ PR_setfsuid,		FILTER_SYSEXIT },
-	{ PR_setfsuid32,	FILTER_SYSEXIT },
-	{ PR_setgid,		FILTER_SYSEXIT },
-	{ PR_setgid32,		FILTER_SYSEXIT },
-	{ PR_setgroups,		FILTER_SYSEXIT },
-	{ PR_setgroups32,	FILTER_SYSEXIT },
-	{ PR_setregid,		FILTER_SYSEXIT },
-	{ PR_setregid32,	FILTER_SYSEXIT },
-	{ PR_setreuid,		FILTER_SYSEXIT },
-	{ PR_setreuid32,	FILTER_SYSEXIT },
-	{ PR_setresgid,		FILTER_SYSEXIT },
-	{ PR_setresgid32,	FILTER_SYSEXIT },
-	{ PR_setresuid,		FILTER_SYSEXIT },
-	{ PR_setresuid32,	FILTER_SYSEXIT },
-	{ PR_setuid,		FILTER_SYSEXIT },
-	{ PR_setuid32,		FILTER_SYSEXIT },
+	{ PR_setfsgid,		0 },
+	{ PR_setfsgid32,	0 },
+	{ PR_setfsuid,		0 },
+	{ PR_setfsuid32,	0 },
+	{ PR_setgid,		0 },
+	{ PR_setgid32,		0 },
+	{ PR_setgroups,		0 },
+	{ PR_setgroups32,	0 },
+	{ PR_setregid,		0 },
+	{ PR_setregid32,	0 },
+	{ PR_setreuid,		0 },
+	{ PR_setreuid32,	0 },
+	{ PR_setresgid,		0 },
+	{ PR_setresgid32,	0 },
+	{ PR_setresuid,		0 },
+	{ PR_setresuid32,	0 },
+	{ PR_setuid,		0 },
+	{ PR_setuid32,		0 },
 	{ PR_setxattr,		FILTER_SYSEXIT },
 	{ PR_setdomainname,	FILTER_SYSEXIT },
 	{ PR_sethostname,	FILTER_SYSEXIT },
@@ -776,28 +776,104 @@ static int handle_sysenter_end(Tracee *tracee, Config *config)
 	case PR_socketcall:
 		return handle_sendmsg_enter_end(tracee, sysnum);
 
+	/* These syscalls are fully emulated, right here: the kernel
+	 * skips a voided syscall and returns what is in the result
+	 * register, so they don't need an exit stop.  */
 	case PR_setuid:
 	case PR_setuid32:
+		set_sysnum(tracee, PR_void);
+		SETXID(uid, ORIGINAL);
+
 	case PR_setgid:
 	case PR_setgid32:
+		set_sysnum(tracee, PR_void);
+		SETXID(gid, ORIGINAL);
+
 	case PR_setreuid:
 	case PR_setreuid32:
+		set_sysnum(tracee, PR_void);
+		SETREXID(uid, ORIGINAL);
+
 	case PR_setregid:
 	case PR_setregid32:
+		set_sysnum(tracee, PR_void);
+		SETREXID(gid, ORIGINAL);
+
 	case PR_setresuid:
 	case PR_setresuid32:
+		set_sysnum(tracee, PR_void);
+		SETRESXID(u, ORIGINAL);
+
 	case PR_setresgid:
 	case PR_setresgid32:
+		set_sysnum(tracee, PR_void);
+		SETRESXID(g, ORIGINAL);
+
 	case PR_setfsuid:
 	case PR_setfsuid32:
+		set_sysnum(tracee, PR_void);
+		SETFSXID(u);
+
 	case PR_setfsgid:
 	case PR_setfsgid32:
-#ifdef USERLAND
- 	case PR_umask:
-#endif
-		/* These syscalls are fully emulated.  */
 		set_sysnum(tracee, PR_void);
+		SETFSXID(g);
+
+	case PR_getuid:
+	case PR_getuid32:
+		set_sysnum(tracee, PR_void);
+		poke_reg(tracee, SYSARG_RESULT, config->ruid);
 		return 0;
+
+	case PR_getgid:
+	case PR_getgid32:
+		set_sysnum(tracee, PR_void);
+		poke_reg(tracee, SYSARG_RESULT, config->rgid);
+		return 0;
+
+	case PR_geteuid:
+	case PR_geteuid32:
+		set_sysnum(tracee, PR_void);
+		poke_reg(tracee, SYSARG_RESULT, config->euid);
+		return 0;
+
+	case PR_getegid:
+	case PR_getegid32:
+		set_sysnum(tracee, PR_void);
+		poke_reg(tracee, SYSARG_RESULT, config->egid);
+		return 0;
+
+	case PR_getresuid:
+	case PR_getresuid32: {
+		int status;
+		set_sysnum(tracee, PR_void);
+		status = handle_getresuid_exit_end(tracee, config, get_sysnum(tracee, ORIGINAL));
+		if (status < 0)
+			return status;
+		poke_reg(tracee, SYSARG_RESULT, 0);
+		return 0;
+	}
+
+	case PR_getresgid:
+	case PR_getresgid32: {
+		int status;
+		set_sysnum(tracee, PR_void);
+		status = handle_getresgid_exit_end(tracee, config, get_sysnum(tracee, ORIGINAL));
+		if (status < 0)
+			return status;
+		poke_reg(tracee, SYSARG_RESULT, 0);
+		return 0;
+	}
+
+#ifdef USERLAND
+	case PR_umask: {
+		mode_t previous = config->umask;
+		set_sysnum(tracee, PR_void);
+		config->umask = (mode_t) peek_reg(tracee, ORIGINAL, SYSARG_1) & 0777;
+		poke_reg(tracee, SYSARG_RESULT, previous);
+		return 0;
+	}
+#endif
 
 #ifndef USERLAND
 	case PR_fchownat: 
@@ -912,6 +988,7 @@ static int handle_sysenter_end(Tracee *tracee, Config *config)
 	//On Android, the system is returning gids that our rootfs knows nothing about
 	//which is generating errors
 	set_sysnum(tracee, PR_void);
+	poke_reg(tracee, SYSARG_RESULT, 0);
 	return 0;
 #endif
 
@@ -1016,11 +1093,6 @@ static int handle_sysexit_end(Tracee *tracee, Config *config)
 		return handle_getresgid_exit_end(tracee, config, sysnum);
 
 #ifdef USERLAND
-	case PR_umask:
-		poke_reg(tracee, SYSARG_RESULT, config->umask);
-		config->umask = (mode_t) peek_reg(tracee, MODIFIED, SYSARG_1); 
-		return 0;
-
 	case PR_setgroups:
 	case PR_setgroups32:
 	case PR_getgroups:

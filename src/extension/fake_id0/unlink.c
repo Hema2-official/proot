@@ -58,7 +58,7 @@ static void remove_orphaned_meta_files(char path[PATH_MAX])
 				status = snprintf(entry_path, PATH_MAX, "%s/%s", path, name);
 				if (status < 0 || status >= PATH_MAX)
 					goto end;
-				unlink(entry_path);
+				unlink_meta(entry_path);
 			}
 		}
 	}
@@ -104,7 +104,7 @@ int handle_unlink_enter_end(Tracee *tracee, Reg fd_sysarg, Reg path_sysarg, Conf
 	 *  unlink that as well.
 	 */
 	if(path_exists(meta_path) == 0) 
-		unlink(meta_path);
+		unlink_meta(meta_path);
 
 	return 0;
 }

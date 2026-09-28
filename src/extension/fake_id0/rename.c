@@ -35,12 +35,12 @@ static void exchange_meta_files(char meta_path[PATH_MAX], char new_meta_path[PAT
 	if(old_exists)
 		write_meta_file(new_meta_path, mode, uid, gid, 0, config);
 	else if(new_exists)
-		unlink(new_meta_path);
+		unlink_meta(new_meta_path);
 
 	if(new_exists)
 		write_meta_file(meta_path, new_mode, new_uid, new_gid, 0, config);
 	else if(old_exists)
-		unlink(meta_path);
+		unlink_meta(meta_path);
 }
 
 /** Handles rename, renameat and renameat2 syscalls at the entry stage:
@@ -137,7 +137,7 @@ int handle_rename_exit_end(Tracee *tracee, Reg oldpath_sysarg, Reg newpath_sysar
 		return 0;
 
 	read_meta_file(meta_path, &mode, &uid, &gid, config);
-	unlink(meta_path);
+	unlink_meta(meta_path);
 	write_meta_file(new_meta_path, mode, uid, gid, 0, config);
 	return 0;
 }

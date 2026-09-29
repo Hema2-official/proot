@@ -571,7 +571,7 @@ static void execve_proc_exe(Extension *extension, struct execve_proc_exe_state *
 		return;
 
 	strcpy(guest_link, link);
-	status = detranslate_path(TRACEE(extension), guest_link, NULL);
+	status = detranslate_path(EXTENSION_TRACEE(extension), guest_link, NULL);
 	if (status < 0)
 		return;
 
@@ -861,7 +861,7 @@ static int decrement_link_count(Tracee *tracee, Reg sysarg)
  */
 static int handle_sysexit_end(Extension *extension)
 {
-	Tracee *tracee = TRACEE(extension);
+	Tracee *tracee = EXTENSION_TRACEE(extension);
 	word_t sysnum;
 
 	sysnum = get_sysnum(tracee, ORIGINAL);
@@ -1033,7 +1033,7 @@ static void link2symlink_handle_statx(struct statx_syscall_state *state)
  */
 static void remember_opened_link(Extension *extension, const char host_path[PATH_MAX])
 {
-	Tracee *tracee = TRACEE(extension);
+	Tracee *tracee = EXTENSION_TRACEE(extension);
 	Link2SymlinkConfig *config;
 	const char *link;
 
@@ -1074,7 +1074,7 @@ static void remember_final_path(const char *host_path, const HostPath *info)
  */
 static void translated_path(Extension *extension, char translated_path[PATH_MAX])
 {
-	Tracee *tracee = TRACEE(extension);
+	Tracee *tracee = EXTENSION_TRACEE(extension);
 	Link2SymlinkConfig *config;
 	char final[PATH_MAX];
 
@@ -1271,7 +1271,7 @@ int link2symlink_callback(Extension *extension, ExtensionEvent event,
 	}
 
 	case SYSCALL_ENTER_END: {
-		Tracee *tracee = TRACEE(extension);
+		Tracee *tracee = EXTENSION_TRACEE(extension);
 
 		switch (get_sysnum(tracee, ORIGINAL)) {
 		case PR_rename:

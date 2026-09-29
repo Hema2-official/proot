@@ -56,14 +56,6 @@
 static bool seccomp_after_ptrace_enter = false;
 static bool seccomp_ptrace_event_supported = false;
 
-/* Whether the kernel lets PTRACE_GETEVENTMSG read the message of the
- * last ptrace event, see handle_tracee_event().  */
-static enum {
-	EVENTMSG_UNKNOWN = 0,
-	EVENTMSG_RELIABLE,
-	EVENTMSG_LOST,
-} eventmsg_state = EVENTMSG_UNKNOWN;
-
 /**
  * Return true if the running kernel is new enough to generate
  * PTRACE_EVENT_SECCOMP stops (requires Linux >= 3.5).  Old Android
@@ -149,6 +141,10 @@ int launch_process(Tracee *tracee, char *const argv[])
 	default: /* parent */
 		/* We know the pid of the first tracee now.  */
 		tracee->pid = pid;
+
+		/* What its filter traces, see get_seccomp_flags().  */
+		if (getenv("PROOT_NO_SECCOMP") == NULL)
+			remember_syscall_filtering(tracee);
 		return 0;
 	}
 
@@ -432,6 +428,7 @@ int event_loop()
 		tracee = get_tracee(NULL, pid, true);
 		assert(tracee != NULL);
 		was_sysenter = IS_IN_SYSENTER(tracee);
+		tracee->regs_are_current = false;
 
 		tracee->running = false;
 
@@ -687,6 +684,7 @@ int handle_tracee_event(Tracee *tracee, int tracee_status)
 		case SIGTRAP | PTRACE_EVENT_SECCOMP2 << 8:
 		case SIGTRAP | PTRACE_EVENT_SECCOMP << 8: {
 			unsigned long flags = 0;
+			long known_flags;
 
 			signal = 0;
 
@@ -720,35 +718,24 @@ int handle_tracee_event(Tracee *tracee, int tracee_status)
 			if (tracee->seccomp != ENABLED)
 				break;
 
-			status = ptrace(PTRACE_GETEVENTMSG, tracee->pid, NULL, &flags);
+			/* The flags the filter returned: from its table, with
+			 * the registers translate_syscall() needs anyway,
+			 * rather than one more ptrace request.  This also
+			 * keeps them on kernels (seen on aarch64 4.14.357
+			 * builds) which clear the message of the last ptrace
+			 * event on every ptrace request.  */
+			status = fetch_regs(tracee);
 			if (status < 0)
 				break;
+			tracee->regs_are_current = true;
 
-			/* Some kernels (seen on aarch64 4.14.357 builds)
-			 * clear the message of the last ptrace event on
-			 * every ptrace request, so reading it always
-			 * yields 0 and the flags of the filter are lost.
-			 * PRoot knows them anyway: the filter was built
-			 * from its own lists.  Tell such kernels apart on
-			 * the first stop of a syscall listed with
-			 * FILTER_SYSEXIT; that very stop and all the later
-			 * ones then rely on the lists, which costs one more
-			 * ptrace request per stop on those kernels only.  */
-			if (eventmsg_state != EVENTMSG_RELIABLE && fetch_regs(tracee) >= 0) {
-				int expected = filtered_sysnum_flags(tracee, get_sysnum(tracee, CURRENT));
-
-				if (eventmsg_state == EVENTMSG_UNKNOWN && (expected & FILTER_SYSEXIT) != 0) {
-					if ((flags & FILTER_SYSEXIT) != 0)
-						eventmsg_state = EVENTMSG_RELIABLE;
-					else {
-						eventmsg_state = EVENTMSG_LOST;
-						VERBOSE(tracee, 1, "this kernel loses ptrace event messages "
-							"(PTRACE_GETEVENTMSG reads 0), working around it");
-					}
-				}
-
-				if (eventmsg_state != EVENTMSG_RELIABLE)
-					flags |= expected;
+			known_flags = get_seccomp_flags(tracee);
+			if (known_flags >= 0)
+				flags = known_flags;
+			else {
+				status = ptrace(PTRACE_GETEVENTMSG, tracee->pid, NULL, &flags);
+				if (status < 0)
+					break;
 			}
 
 			/* Use the common ptrace flow when

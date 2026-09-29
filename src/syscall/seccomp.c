@@ -51,6 +51,7 @@
 #endif
 
 #include "syscall/seccomp.h"
+#include "tracee/reg.h"
 #include "tracee/tracee.h"
 #include "syscall/syscall.h"
 #include "syscall/sysnum.h"
@@ -630,17 +631,20 @@ static int merge_filtered_sysnums(TALLOC_CTX *context, FilteredSysnum **sysnums,
  * all of its future children.  This function returns -errno if an
  * error occurred, otherwise 0.
  */
-int enable_syscall_filtering(const Tracee *tracee)
+/**
+ * Put in *@sysnums, allocated with @context, the syscalls PRoot and
+ * the extensions of @tracee trace.  This function returns -errno if an
+ * error occurred, otherwise 0.
+ */
+static int merge_all_filtered_sysnums(TALLOC_CTX *context, const Tracee *tracee,
+				FilteredSysnum **sysnums)
 {
-	FilteredSysnum *filtered_sysnums = NULL;
 	Extension *extension;
 	int status;
 
-	assert(tracee != NULL && tracee->ctx != NULL);
-
 	/* Add the sysnums required by PRoot to the list of filtered
 	 * sysnums.  TODO: only if path translation is required.  */
-	status = merge_filtered_sysnums(tracee->ctx, &filtered_sysnums, proot_sysnums);
+	status = merge_filtered_sysnums(context, sysnums, proot_sysnums);
 	if (status < 0)
 		return status;
 
@@ -651,12 +655,25 @@ int enable_syscall_filtering(const Tracee *tracee)
 			if (extension->filtered_sysnums == NULL)
 				continue;
 
-			status = merge_filtered_sysnums(tracee->ctx, &filtered_sysnums,
-							extension->filtered_sysnums);
+			status = merge_filtered_sysnums(context, sysnums, extension->filtered_sysnums);
 			if (status < 0)
 				return status;
 		}
 	}
+
+	return 0;
+}
+
+int enable_syscall_filtering(const Tracee *tracee)
+{
+	FilteredSysnum *filtered_sysnums = NULL;
+	int status;
+
+	assert(tracee != NULL && tracee->ctx != NULL);
+
+	status = merge_all_filtered_sysnums(tracee->ctx, tracee, &filtered_sysnums);
+	if (status < 0)
+		return status;
 
 	status = set_seccomp_filters(filtered_sysnums);
 	if (status < 0)
@@ -665,36 +682,69 @@ int enable_syscall_filtering(const Tracee *tracee)
 	return 0;
 }
 
+/* The syscalls the filter traces, by number, for the tracer: the flags
+ * a stop comes with are there, which saves asking the kernel for them
+ * with PTRACE_GETEVENTMSG.  Each ptrace request costs a few µs, most
+ * of what a stop costs PRoot.  */
+static const FilteredSysnum *traced_syscalls[PR_NB_SYSNUM];
+static bool traced_syscalls_known = false;
+
 /**
- * Return the flags the filter of enable_syscall_filtering() associates
- * with @sysnum for @tracee, ie. the data PTRACE_EVENT_SECCOMP stops of
- * that syscall report: the filter was built from the very same lists.
+ * Remember, in the tracer, the syscalls enable_syscall_filtering()
+ * made @tracee's filter trace.  Its children inherit that filter.
  */
-int filtered_sysnum_flags(const Tracee *tracee, Sysnum sysnum)
+void remember_syscall_filtering(const Tracee *tracee)
 {
-	Extension *extension;
-	int flags = 0;
+	FilteredSysnum *filtered_sysnums = NULL;
+	TALLOC_CTX *context;
 	size_t i;
 
-	for (i = 0; proot_sysnums[i].value != PR_void; i++) {
-		if (proot_sysnums[i].value == sysnum)
-			flags |= proot_sysnums[i].flags;
+	/* Freed at exit, like PRoot's other lasting data, so it isn't reported as a leak.  */
+	context = talloc_new(talloc_autofree_context());
+	if (context == NULL)
+		return;
+
+	if (merge_all_filtered_sysnums(context, tracee, &filtered_sysnums) < 0) {
+		talloc_free(context);
+		return;
 	}
 
-	if (tracee->extensions == NULL)
-		return flags;
-
-	LIST_FOREACH(extension, tracee->extensions, link) {
-		if (extension->filtered_sysnums == NULL)
-			continue;
-
-		for (i = 0; extension->filtered_sysnums[i].value != PR_void; i++) {
-			if (extension->filtered_sysnums[i].value == sysnum)
-				flags |= extension->filtered_sysnums[i].flags;
-		}
+	for (i = 0; filtered_sysnums[i].value != PR_void; i++) {
+		if (filtered_sysnums[i].value < PR_NB_SYSNUM)
+			traced_syscalls[filtered_sysnums[i].value] = &filtered_sysnums[i];
 	}
+	traced_syscalls_known = true;
+}
 
-	return flags;
+/**
+ * The flags (FILTER_SYSEXIT) the filter returned for the syscall
+ * @tracee is stopped at, from its current registers, or -1 if they
+ * aren't known.
+ */
+long get_seccomp_flags(const Tracee *tracee)
+{
+	const FilteredSysnum *traced;
+	uint32_t argument;
+	Sysnum sysnum;
+	size_t i;
+
+	if (!traced_syscalls_known)
+		return -1;
+
+	sysnum = get_sysnum(tracee, CURRENT);
+	if (sysnum >= PR_NB_SYSNUM || traced_syscalls[sysnum] == NULL)
+		return -1;
+	traced = traced_syscalls[sysnum];
+
+	if (traced->filter == NULL)
+		return traced->flags;
+
+	argument = (uint32_t) peek_reg(tracee, CURRENT, SYSARG_1 + traced->filter->argument);
+	for (i = 0; i < traced->filter->nb_values; i++) {
+		if (traced->filter->values[i].value == argument)
+			return traced->filter->values[i].flags;
+	}
+	return -1;
 }
 
 #else
@@ -708,9 +758,13 @@ int enable_syscall_filtering(const Tracee *tracee UNUSED)
 	return 0;
 }
 
-int filtered_sysnum_flags(const Tracee *tracee UNUSED, Sysnum sysnum UNUSED)
+void remember_syscall_filtering(const Tracee *tracee UNUSED)
 {
-	return 0;
+}
+
+long get_seccomp_flags(const Tracee *tracee UNUSED)
+{
+	return -1;
 }
 
 #endif /* defined(HAVE_SECCOMP_FILTER) */

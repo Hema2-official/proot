@@ -893,6 +893,10 @@ static int handle_sysexit_end(Extension *extension)
 		if (result != 0)
 			return 0;
 
+		/* Answered at the entry stage (STAT_SYSCALL), already corrected.  */
+		if (get_sysnum(tracee, MODIFIED) == PR_void)
+			return 0;
+
 		if (sysnum == PR_fstat64 || sysnum == PR_fstat) {
 			status = readlink_proc_pid_fd(tracee->pid, peek_reg(tracee, MODIFIED, SYSARG_1), original);
 			if (status < 0) {
@@ -1007,21 +1011,44 @@ static int handle_sysexit_end(Extension *extension)
 	}
 }
 
+/**
+ * The number of names of the fake hard link whose data file is at
+ * @host_path, from its name, or 0 if it isn't one.
+ */
+static int fake_link_count(const char *host_path)
+{
+	if (!is_l2s_file(host_path))
+		return 0;
+
+	return atoi(&host_path[strlen(host_path) - 4]);
+}
+
 static void link2symlink_handle_statx(struct statx_syscall_state *state)
 {
+	int count;
+
 	if (!(state->statx_buf.stx_mask & STATX_NLINK))
 		return;
 
-	if (!is_l2s_file(state->host_path))
+	count = fake_link_count(state->host_path);
+	if (count <= 0)
 		return;
-
-	size_t ending_len = strlen(state->host_path);
-	state->statx_buf.stx_nlink = atoi(&state->host_path[ending_len - 4]);
+	state->statx_buf.stx_nlink = count;
 
 	/* The statx() that PRoot let the kernel perform did succeed, so
 	 * its result was read back from the tracee and is not written
 	 * again unless it is explicitly reported as updated.  */
 	state->updated_stats = true;
+}
+
+/* stat(2) answered at the entry stage: the translation already led to
+ * a fake hard link's data file, see translated_path().  */
+static void link2symlink_handle_stat(struct stat_syscall_state *state)
+{
+	int count = fake_link_count(state->host_path);
+
+	if (count > 0)
+		state->stat_buf.st_nlink = count;
 }
 
 /**
@@ -1243,12 +1270,14 @@ int link2symlink_callback(Extension *extension, ExtensionEvent event,
 			{ PR_linkat,		FILTER_SYSEXIT },
 			{ PR_unlink,		FILTER_SYSEXIT },
 			{ PR_unlinkat,		FILTER_SYSEXIT },
-			{ PR_fstat,		FILTER_SYSEXIT },
+			/* Answered at entry (STAT_SYSCALL), PRoot asks for
+			 * the exit stage when it can't.  */
+			{ PR_fstat,		0 },
 			{ PR_fstat64,		FILTER_SYSEXIT },
-			{ PR_fstatat64,		FILTER_SYSEXIT },
+			{ PR_fstatat64,		0 },
 			{ PR_lstat,		FILTER_SYSEXIT },
 			{ PR_lstat64,		FILTER_SYSEXIT },
-			{ PR_newfstatat,	FILTER_SYSEXIT },
+			{ PR_newfstatat,	0 },
 			{ PR_stat,		FILTER_SYSEXIT },
 			{ PR_stat64,		FILTER_SYSEXIT },
 			{ PR_rename,		FILTER_SYSEXIT },
@@ -1437,6 +1466,10 @@ int link2symlink_callback(Extension *extension, ExtensionEvent event,
 	case INHERIT_CHILD:
 		/* Nothing to inherit: the child's configuration is
 		 * allocated when it is needed.  */
+		return 0;
+
+	case STAT_SYSCALL:
+		link2symlink_handle_stat((struct stat_syscall_state *) data1);
 		return 0;
 
 	default:

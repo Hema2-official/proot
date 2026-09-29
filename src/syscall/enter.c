@@ -34,6 +34,8 @@
 #include <sys/mount.h>   /* MS_BIND, MS_REMOUNT, ... */
 #include <sys/socket.h>  /* AF_NETLINK, AF_UNIX, SOCK_DGRAM, SOCK_CLOEXEC */
 #include <sched.h>       /* CLONE_NEW*, */
+#include <sys/ptrace.h>  /* PTRACE_SYSCALL, */
+#include <sys/stat.h>    /* S_IFLNK, */
 #include <termios.h>     /* TCSETS, TCSANOW */
 #include <linux/netlink.h> /* struct nlmsghdr, NLMSG_ERROR, struct nlmsgerr */
 #include <linux/rtnetlink.h> /* RTM_*, struct ifinfomsg, struct rtattr, RTA_* */
@@ -1879,6 +1881,44 @@ static void maybe_redirect_userns_file(Tracee *tracee, Reg reg, int flags)
 }
 
 /**
+ * Translate the path of readlink(2) or readlinkat(2), @path relative
+ * to @dir_fd, into the @reg argument of the current syscall.  Only a
+ * symlink at the end of the path gives it something to return, which
+ * translate_syscall_exit() translates back, and canonicalize() looks
+ * at that last component anyway (or knows it is a directory): ask for
+ * the exit stage for a symlink only, and answer anything else that is
+ * there with EINVAL right away, like the kernel.  glibc's realpath(3)
+ * readlinks every component of a path to find its symlinks.  This
+ * function returns -errno if an error occured, otherwise 0.
+ */
+static int translate_readlink(Tracee *tracee, int dir_fd, char path[PATH_MAX], Reg reg)
+{
+	char host_path[PATH_MAX];
+	int type;
+	int status;
+
+	/* An empty path: readlinkat(2) reads the descriptor's link.  */
+	if (path[0] == '\0') {
+		tracee->restart_how = PTRACE_SYSCALL;
+		return 0;
+	}
+
+	set_final_type_only(true);
+	status = translate_path(tracee, host_path, dir_fd, path, false);
+	set_final_type_only(false);
+	if (status < 0)
+		return status;
+
+	type = final_component_type(host_path);
+	if (type > 0 && type != S_IFLNK)
+		return -EINVAL;
+
+	/* A symlink, or not known.  */
+	tracee->restart_how = PTRACE_SYSCALL;
+	return set_sysarg_path(tracee, host_path, reg);
+}
+
+/**
  * Translate the input arguments of the current @tracee's syscall in the
  * @tracee->pid process area. This function sets @tracee->status to
  * -errno if an error occured from the tracee's point-of-view (EFAULT
@@ -2747,6 +2787,13 @@ int translate_syscall_enter(Tracee *tracee)
 		break;
 
 	case PR_readlink:
+		status = get_sysarg_path(tracee, path, SYSARG_1);
+		if (status < 0)
+			break;
+
+		status = translate_readlink(tracee, AT_FDCWD, path, SYSARG_1);
+		break;
+
 	case PR_lchown:
 	case PR_lchown32:
 	case PR_lgetxattr:
@@ -2843,6 +2890,15 @@ int translate_syscall_enter(Tracee *tracee)
 		break;
 
 	case PR_readlinkat:
+		dirfd = peek_reg(tracee, CURRENT, SYSARG_1);
+
+		status = get_sysarg_path(tracee, path, SYSARG_2);
+		if (status < 0)
+			break;
+
+		status = translate_readlink(tracee, dirfd, path, SYSARG_2);
+		break;
+
 	case PR_unlinkat:
 		dirfd = peek_reg(tracee, CURRENT, SYSARG_1);
 

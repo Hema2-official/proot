@@ -585,6 +585,8 @@ static const ArgumentFilter *merge_argument_filters(TALLOC_CTX *context,
 		return NULL;
 	if (a == b)
 		return a;
+	if (a->non_null || b->non_null)
+		return NULL;
 
 	merged = talloc_zero(context, ArgumentFilter);
 	values = talloc_array(context, ArgumentValue, a->nb_values + b->nb_values);

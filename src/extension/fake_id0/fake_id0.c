@@ -336,6 +336,12 @@ typedef struct {
 #define CHOWN_FLAGS FILTER_SYSEXIT
 #endif
 
+/* Only PR_SET_KEEPCAPS is mirrored, at its exit (see
+ * handle_sysexit_end()): programs call prctl(2) for much else, such as
+ * naming each of their threads.  */
+static const ArgumentValue keepcaps_options[] = { { PR_SET_KEEPCAPS, FILTER_SYSEXIT } };
+static const ArgumentFilter keepcaps_filter = { 0, 1, keepcaps_options };
+
 /* List of syscalls handled by this extensions.  */
 static FilteredSysnum filtered_sysnums[] = {
 #ifdef USERLAND
@@ -402,7 +408,7 @@ static FilteredSysnum filtered_sysnums[] = {
 	{ PR_newfstatat,	0 },
 	{ PR_oldlstat,		FILTER_SYSEXIT },
 	{ PR_oldstat,		FILTER_SYSEXIT },
-	{ PR_prctl,		FILTER_SYSEXIT },
+	{ PR_prctl,		0, &keepcaps_filter },
 	{ PR_sendmsg,		0 },
 	{ PR_setfsgid,		0 },
 	{ PR_setfsgid32,	0 },

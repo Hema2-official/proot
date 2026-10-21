@@ -28,6 +28,11 @@
 #include <linux/prctl.h> /* PR_GET_AUXV, */
 #include <string.h>      /* strlen(3), */
 #include <unistd.h>      /* readlink(2), */
+#include <sys/ioctl.h>   /* ioctl(2), */
+#include <sys/socket.h>  /* socket(2), */
+#include <net/if.h>      /* struct ifreq, struct ifconf, */
+#include <linux/sockios.h> /* SIOCGIF*, */
+#include <talloc.h>      /* talloc_*, */
 
 #include "cli/note.h"
 #include "syscall/syscall.h"
@@ -48,6 +53,106 @@
 #include "ptrace/wait.h"
 #include "extension/extension.h"
 #include "arch.h"
+
+/**
+ * Whether @request is one of the SIOCGIF* ioctls that read an
+ * interface's settings.
+ */
+static bool is_interface_request(word_t request)
+{
+	switch (request) {
+	case SIOCGIFNAME:
+	case SIOCGIFCONF:
+	case SIOCGIFFLAGS:
+	case SIOCGIFADDR:
+	case SIOCGIFDSTADDR:
+	case SIOCGIFBRDADDR:
+	case SIOCGIFNETMASK:
+	case SIOCGIFMETRIC:
+	case SIOCGIFMTU:
+	case SIOCGIFINDEX:
+	case SIOCGIFTXQLEN:
+		return true;
+	default:
+		return false;
+	}
+}
+
+/**
+ * Redo the SIOCGIFCONF the kernel refused, with the struct ifconf at
+ * @address in the @tracee, on PRoot's own socket @sock.  This function
+ * returns the result for the tracee.
+ */
+static int redo_ifconf(Tracee *tracee, int sock, word_t address)
+{
+	struct ifconf tracee_conf;
+	struct ifconf conf;
+	int status;
+
+	status = read_data(tracee, &tracee_conf, address, sizeof(tracee_conf));
+	if (status < 0)
+		return status;
+
+	/* Without a buffer, the kernel tells how large it has to be.  */
+	conf.ifc_len = tracee_conf.ifc_buf == NULL ? 0 : tracee_conf.ifc_len;
+	if (conf.ifc_len < 0)
+		return -EINVAL;
+	if (conf.ifc_len > 65536)
+		conf.ifc_len = 65536;
+	conf.ifc_buf = NULL;
+	if (conf.ifc_len > 0) {
+		conf.ifc_buf = talloc_size(tracee->ctx, conf.ifc_len);
+		if (conf.ifc_buf == NULL)
+			return -ENOMEM;
+	}
+
+	status = ioctl(sock, SIOCGIFCONF, &conf) < 0 ? -errno : 0;
+	if (status == 0 && conf.ifc_buf != NULL)
+		status = write_data(tracee, (word_t) tracee_conf.ifc_buf, conf.ifc_buf, conf.ifc_len);
+	if (status == 0) {
+		tracee_conf.ifc_len = conf.ifc_len;
+		status = write_data(tracee, address, &tracee_conf, sizeof(tracee_conf));
+	}
+
+	talloc_free(conf.ifc_buf);
+	return status;
+}
+
+/**
+ * Redo the SIOCGIF* ioctl(2) of the current @tracee the kernel just
+ * refused, on an internet socket of PRoot's own.  Since Android 11,
+ * apps may use these ioctls only on internet sockets, while glibc's
+ * if_indextoname(3) and others use a Unix one.
+ */
+static void redo_interface_ioctl(Tracee *tracee)
+{
+	static int sock = -1;
+	word_t request = peek_reg(tracee, ORIGINAL, SYSARG_2);
+	word_t address = peek_reg(tracee, ORIGINAL, SYSARG_3);
+	struct ifreq interface;
+	int status;
+
+	/* The structures of 32-bit tracees have another layout.  */
+	if (!is_interface_request(request) || is_32on64_mode(tracee))
+		return;
+
+	if (sock < 0)
+		sock = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+	if (sock < 0)
+		return;
+
+	if (request == SIOCGIFCONF)
+		status = redo_ifconf(tracee, sock, address);
+	else {
+		status = read_data(tracee, &interface, address, sizeof(interface));
+		if (status == 0)
+			status = ioctl(sock, request, &interface) < 0 ? -errno : 0;
+		if (status == 0)
+			status = write_data(tracee, address, &interface, sizeof(interface));
+	}
+
+	poke_reg(tracee, SYSARG_RESULT, (word_t) status);
+}
 
 /**
  * Translate the output arguments of the current @tracee's syscall in
@@ -770,10 +875,12 @@ void translate_syscall_exit(Tracee *tracee)
 		break;
 
 	case PR_ioctl:
-		if (peek_reg(tracee, ORIGINAL, SYSARG_2) == _IOW(0x94, 9, int) /* FICLONE */ &&
-				(int) peek_reg(tracee, CURRENT, SYSARG_RESULT) == -EACCES) {
+		if ((int) peek_reg(tracee, CURRENT, SYSARG_RESULT) != -EACCES)
+			goto end;
+		if (peek_reg(tracee, ORIGINAL, SYSARG_2) == _IOW(0x94, 9, int) /* FICLONE */)
 			poke_reg(tracee, SYSARG_RESULT, -EOPNOTSUPP);
-		}
+		else
+			redo_interface_ioctl(tracee);
 		goto end;
 
 	case PR_socket:

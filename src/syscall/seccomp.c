@@ -114,7 +114,17 @@ static void free_program_filter(struct sock_fprog *program)
  * translate_syscall_exit().  Tracing every ioctl(2) cost two stops per
  * GPU (KGSL) or terminal request.  */
 static const ArgumentValue ioctl_requests[] = {
-	{ SIOCGIFINDEX, 0 },
+	{ SIOCGIFNAME,		FILTER_SYSEXIT },
+	{ SIOCGIFCONF,		FILTER_SYSEXIT },
+	{ SIOCGIFFLAGS,		FILTER_SYSEXIT },
+	{ SIOCGIFADDR,		FILTER_SYSEXIT },
+	{ SIOCGIFDSTADDR,	FILTER_SYSEXIT },
+	{ SIOCGIFBRDADDR,	FILTER_SYSEXIT },
+	{ SIOCGIFNETMASK,	FILTER_SYSEXIT },
+	{ SIOCGIFMETRIC,	FILTER_SYSEXIT },
+	{ SIOCGIFMTU,		FILTER_SYSEXIT },
+	{ SIOCGIFINDEX,		FILTER_SYSEXIT },
+	{ SIOCGIFTXQLEN,	FILTER_SYSEXIT },
 	{ TCSETS + 2, 0 },
 	{ TCGETS2, 0 },
 	{ TCSETS2, 0 },

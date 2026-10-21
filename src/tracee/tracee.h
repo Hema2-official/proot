@@ -138,6 +138,7 @@ typedef struct tracee {
 #define MAX_FAKE_NETLINK_REPLY 8192
 	struct fake_netlink_socket {
 		int fd;
+		ino_t ino;
 		uint8_t *reply;
 		size_t reply_len;
 		size_t reply_off;
@@ -154,10 +155,19 @@ typedef struct tracee {
 	 * (see handle_netlink_reply_exit).  */
 #define MAX_NETLINK_ROUTE_FDS 8
 	int netlink_route_fds[MAX_NETLINK_ROUTE_FDS];
+	ino_t netlink_route_inos[MAX_NETLINK_ROUTE_FDS];
 	int netlink_route_fds_count;
 	bool pending_real_netlink_socket;
 	bool netlink_ack_pending;
 	int netlink_ack_fd;
+
+	/* PRoot's seccomp filter lets close(2), recvmsg(2), recvfrom(2)
+	 * and send(2) through, which these sockets need it to see: for
+	 * this many syscalls, the tracee stops at each of them anyway,
+	 * see open_netlink_window().  The sockets' inodes ("ino") tell
+	 * them from the files a descriptor number is reused for once
+	 * they're closed behind PRoot's back.  */
+	unsigned int netlink_window;
 	uint32_t netlink_ack_seq;
 
 	/* Support for ptrace emulation (tracer side).  */

@@ -226,6 +226,15 @@ void translate_syscall(Tracee *tracee)
 			}
 		}
 
+		/* Around a netlink exchange, see open_netlink_window():
+		 * the exit stage too, whose restart then stops the tracee
+		 * at its next syscall.  */
+		if (tracee->netlink_window > 0) {
+			tracee->netlink_window--;
+			tracee->sysexit_pending = true;
+			tracee->restart_how = PTRACE_SYSCALL;
+		}
+
 #ifdef HAS_POKEDATA_WORKAROUND
 		if (tracee->pokedata_workaround_cancelled_syscall) {
 			tracee->pokedata_workaround_cancelled_syscall = false;
@@ -278,6 +287,9 @@ void translate_syscall(Tracee *tracee)
 
 		/* Reset the tracee's status. */
 		tracee->status = 0;
+
+		if (tracee->netlink_window > 0)
+			tracee->restart_how = PTRACE_SYSCALL;
 #ifdef HAS_POKEDATA_WORKAROUND
 		tracee->pokedata_workaround_cancelled_syscall = false;
 #endif

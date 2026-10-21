@@ -679,6 +679,37 @@ blocked:
 	return true;
 }
 
+/**
+ * The inode of the file the descriptor @fd of @tracee is open on, or 0
+ * if there's none.
+ */
+ino_t descriptor_inode(const Tracee *tracee, int fd)
+{
+	char link[64];
+	struct stat statl;
+
+	snprintf(link, sizeof(link), "/proc/%d/fd/%d", tracee->pid, fd);
+	if (stat(link, &statl) < 0)
+		return 0;
+	return statl.st_ino;
+}
+
+/* The syscalls a netlink exchange is given, see open_netlink_window().  */
+#define NETLINK_WINDOW 256
+
+/**
+ * Make @tracee stop at each of its next syscalls, whatever PRoot's
+ * seccomp filter says (see translate_syscall()): close(2), recvmsg(2),
+ * recvfrom(2) and send(2) on the netlink sockets PRoot looks after are
+ * let through by that filter, as tracing them for every socket costs
+ * every program its share.  A request, its replies and the socket's
+ * close come within a few syscalls of each other.
+ */
+void open_netlink_window(Tracee *tracee)
+{
+	tracee->netlink_window = NETLINK_WINDOW;
+}
+
 /* The bookkeeping entry for @fd, or NULL when PRoot didn't substitute
  * that fd.  */
 static struct fake_netlink_socket *fake_netlink_socket(Tracee *tracee, int fd)
@@ -688,9 +719,21 @@ static struct fake_netlink_socket *fake_netlink_socket(Tracee *tracee, int fd)
 	if (fd < 0)
 		return NULL;
 
-	for (i = 0; i < tracee->fake_netlink_fds_count; i++)
-		if (tracee->fake_netlink_fds[i].fd == fd)
-			return &tracee->fake_netlink_fds[i];
+	for (i = 0; i < tracee->fake_netlink_fds_count; i++) {
+		struct fake_netlink_socket *sock = &tracee->fake_netlink_fds[i];
+
+		if (sock->fd != fd)
+			continue;
+
+		/* Closed while PRoot didn't look, and the number reused
+		 * for something else.  */
+		if (descriptor_inode(tracee, fd) != sock->ino) {
+			talloc_free(sock->reply);
+			*sock = tracee->fake_netlink_fds[--tracee->fake_netlink_fds_count];
+			return NULL;
+		}
+		return sock;
+	}
 
 	return NULL;
 }
@@ -720,14 +763,32 @@ static void unmark_fake_netlink_fd(Tracee *tracee, int fd)
  * its requests need the ack emulation below.
  */
 
-static bool is_netlink_route_fd(const Tracee *tracee, int fd)
+static void forget_netlink_route_fd(Tracee *tracee, int i)
+{
+	int last = --tracee->netlink_route_fds_count;
+
+	if (tracee->netlink_ack_pending && tracee->netlink_ack_fd == tracee->netlink_route_fds[i])
+		tracee->netlink_ack_pending = false;
+
+	tracee->netlink_route_fds[i] = tracee->netlink_route_fds[last];
+	tracee->netlink_route_inos[i] = tracee->netlink_route_inos[last];
+}
+
+static bool is_netlink_route_fd(Tracee *tracee, int fd)
 {
 	int i;
 	if (fd < 0)
 		return false;
-	for (i = 0; i < tracee->netlink_route_fds_count; i++)
-		if (tracee->netlink_route_fds[i] == fd)
-			return true;
+	for (i = 0; i < tracee->netlink_route_fds_count; i++) {
+		if (tracee->netlink_route_fds[i] != fd)
+			continue;
+		/* See fake_netlink_socket().  */
+		if (descriptor_inode(tracee, fd) != tracee->netlink_route_inos[i]) {
+			forget_netlink_route_fd(tracee, i);
+			return false;
+		}
+		return true;
+	}
 	return false;
 }
 
@@ -736,8 +797,7 @@ static void unmark_netlink_route_fd(Tracee *tracee, int fd)
 	int i;
 	for (i = 0; i < tracee->netlink_route_fds_count; i++) {
 		if (tracee->netlink_route_fds[i] == fd) {
-			tracee->netlink_route_fds[i] =
-				tracee->netlink_route_fds[--tracee->netlink_route_fds_count];
+			forget_netlink_route_fd(tracee, i);
 			break;
 		}
 	}
@@ -1434,6 +1494,9 @@ static void build_fake_netlink_reply(Tracee *tracee, struct fake_netlink_socket 
 	bool dump;
 	size_t off = 0;
 
+	/* For the tracee to receive the reply, see open_netlink_window().  */
+	open_netlink_window(tracee);
+
 	sock->reply_len = 0;
 	sock->reply_off = 0;
 
@@ -1656,7 +1719,7 @@ static bool nl_type_reconfigures(uint16_t type)
 
 /* True for a real NETLINK_ROUTE socket in the hands of a tracee that
  * believes it configures a network namespace of its own.  */
-static bool is_netns_netlink_fd(const Tracee *tracee, int fd)
+static bool is_netns_netlink_fd(Tracee *tracee, int fd)
 {
 	return tracee->fake_netns && is_netlink_route_fd(tracee, fd);
 }
@@ -1674,6 +1737,9 @@ static void note_netns_netlink_request(Tracee *tracee, int fd,
 
 	if (!is_netns_netlink_fd(tracee, fd))
 		return;
+
+	/* For the reply, see handle_netlink_reply_exit().  */
+	open_netlink_window(tracee);
 
 	if (buf_addr == 0 || buf_len < sizeof(hdr))
 		return;
@@ -2512,6 +2578,7 @@ int translate_syscall_enter(Tracee *tracee)
 		    && is_fake_netlink_fd(tracee, peek_reg(tracee, CURRENT, SYSARG_1))) {
 			poke_reg(tracee, SYSARG_RESULT, 0);
 			set_sysnum(tracee, PR_void);
+			open_netlink_window(tracee);
 			status = 0;
 			break;
 		}
@@ -2618,6 +2685,7 @@ int translate_syscall_enter(Tracee *tracee)
 			}
 			tracee->sysexit_pending = true;
 			tracee->restart_how = PTRACE_SYSCALL;
+			open_netlink_window(tracee);
 		}
 		status = 0;
 		break;
@@ -2756,6 +2824,7 @@ int translate_syscall_enter(Tracee *tracee)
 			 * pattern).  */
 			if (!(flags & MSG_PEEK))
 				consume_fake_netlink_datagram(sock, datagram);
+			open_netlink_window(tracee);
 			result = (flags & MSG_TRUNC) ? datagram : copied;
 
 			/* Hand back a kernel sockaddr_nl (nl_pid == 0) source
@@ -2818,6 +2887,7 @@ int translate_syscall_enter(Tracee *tracee)
 			 * pattern).  */
 			if (!(flags & MSG_PEEK))
 				consume_fake_netlink_datagram(sock, datagram);
+			open_netlink_window(tracee);
 			result = (flags & MSG_TRUNC) ? datagram : scattered;
 
 			/* glibc's getifaddrs() and friends inspect the

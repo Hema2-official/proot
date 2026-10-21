@@ -151,6 +151,15 @@ static const ArgumentFilter prctl_filter = {
 	0, sizeof(prctl_options) / sizeof(ArgumentValue), prctl_options
 };
 
+/* Only a destination needs translating (see translate_send_address()):
+ * send(2) is sendto(2) without one, and most of what Unix domain
+ * sockets carry (D-Bus, PulseAudio, ...).  Requests to an emulated
+ * netlink socket are seen whatever their destination while its
+ * exchange goes on, see open_netlink_window().  */
+static const ArgumentFilter sendto_filter = {
+	.argument = 4, .non_null = true, .non_null_flags = 0,
+};
+
 /* A traced syscall of one architecture, as the BPF program sees it.  */
 typedef struct {
 	uint32_t number;
@@ -183,8 +192,10 @@ static size_t search_length(const TracedSyscall *syscalls, size_t nb_syscalls)
 			+ search_length(syscalls, middle);
 	}
 
-	for (i = 0; i < nb_syscalls; i++)
-		length += syscalls[i].filter == NULL ? 2 : 3 + 2 * syscalls[i].filter->nb_values;
+	for (i = 0; i < nb_syscalls; i++) {
+		const ArgumentFilter *filter = syscalls[i].filter;
+		length += filter == NULL ? 2 : filter->non_null ? 7 : 3 + 2 * filter->nb_values;
+	}
 	return length + 1;
 }
 
@@ -229,6 +240,32 @@ static int emit_search(struct sock_fprog *program, const TracedSyscall *syscalls
 			};
 			DEBUG_FILTER("FILTER:     trace if syscall == %u\n", syscalls[i].number);
 			status = add_statements(program, 2, statements);
+			if (status < 0)
+				return status;
+			continue;
+		}
+
+		if (filter->non_null) {
+			size_t low_offset = offsetof(struct seccomp_data, args)
+				+ filter->argument * sizeof(uint64_t);
+			size_t high_offset = low_offset + sizeof(uint32_t);
+#if __BYTE_ORDER == __BIG_ENDIAN
+			low_offset += sizeof(uint32_t);
+			high_offset -= sizeof(uint32_t);
+#endif
+			/* A NULL pointer has both halves 0.  */
+			struct sock_filter statements[7] = {
+				BPF_JUMP(BPF_JMP + BPF_JEQ + BPF_K, syscalls[i].number, 0, 6),
+				BPF_STMT(BPF_LD + BPF_W + BPF_ABS, low_offset),
+				BPF_JUMP(BPF_JMP + BPF_JEQ + BPF_K, 0, 0, 3),
+				BPF_STMT(BPF_LD + BPF_W + BPF_ABS, high_offset),
+				BPF_JUMP(BPF_JMP + BPF_JEQ + BPF_K, 0, 0, 1),
+				BPF_STMT(BPF_RET + BPF_K, SECCOMP_RET_ALLOW),
+				BPF_STMT(BPF_RET + BPF_K, SECCOMP_RET_TRACE + filter->non_null_flags),
+			};
+			DEBUG_FILTER("FILTER:     trace if syscall == %u and argument %u != NULL\n",
+				syscalls[i].number, filter->argument);
+			status = add_statements(program, 7, statements);
 			if (status < 0)
 				return status;
 			continue;
@@ -430,14 +467,11 @@ static FilteredSysnum proot_sysnums[] = {
 	{ PR_chroot,		0 },
 	{ PR_clone,		0 },
 	{ PR_clone3,		0 },
-	{ PR_close,		0 },
 	{ PR_connect,		0 },
 	{ PR_creat,		0 },
-	{ PR_recvfrom,		0 },
-	{ PR_recvmsg,		0 },
 	{ PR_sendmmsg,		0 },
 	{ PR_sendmsg,		0 },
-	{ PR_sendto,		0 },
+	{ PR_sendto,		0, &sendto_filter },
 	{ PR_socket,		FILTER_SYSEXIT },
 	{ PR_execve,		FILTER_SYSEXIT },
 	{ PR_execveat,		FILTER_SYSEXIT },
@@ -738,6 +772,10 @@ long get_seccomp_flags(const Tracee *tracee)
 
 	if (traced->filter == NULL)
 		return traced->flags;
+
+	if (traced->filter->non_null)
+		return peek_reg(tracee, CURRENT, SYSARG_1 + traced->filter->argument) != 0
+			? (long) traced->filter->non_null_flags : -1;
 
 	argument = (uint32_t) peek_reg(tracee, CURRENT, SYSARG_1 + traced->filter->argument);
 	for (i = 0; i < traced->filter->nb_values; i++) {

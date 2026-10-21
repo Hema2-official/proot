@@ -494,9 +494,13 @@ int handle_tracee_event(Tracee *tracee, int tracee_status)
 				|| tracee->restore_original_regs_after_seccomp_event;
 	/* Don't overwrite restart_how if it is explicitly set
 	 * elsewhere, i.e in the ptrace emulation when single
-	 * stepping.  */
+	 * stepping.  A netlink exchange (see open_netlink_window())
+	 * keeps the tracee stopping at each syscall across the other
+	 * events too: an outer seccomp policy raises SIGSYS on every
+	 * syscall PRoot voids at a ptrace stop, and the tracee is
+	 * restarted from that signal's stop.  */
 	if (tracee->restart_how == 0) {
-		if (tracee->seccomp == ENABLED && !sysexit_necessary)
+		if (tracee->seccomp == ENABLED && !sysexit_necessary && tracee->netlink_window == 0)
 			tracee->restart_how = PTRACE_CONT;
 		else
 			tracee->restart_how = PTRACE_SYSCALL;

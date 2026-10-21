@@ -24,6 +24,7 @@
 #define SYSCALL_H
 
 #include <limits.h>     /* PATH_MAX, */
+#include <sys/types.h>  /* ino_t, */
 
 #include "tracee/tracee.h"
 #include "tracee/reg.h"
@@ -59,6 +60,8 @@ extern void translate_syscall_exit(Tracee *tracee);
 extern bool is_voided_syscall(const Tracee *tracee, RegVersion version);
 
 extern void handle_netlink_reply_exit(Tracee *tracee, word_t syscall_number);
+extern void open_netlink_window(Tracee *tracee);
+extern ino_t descriptor_inode(const Tracee *tracee, int fd);
 
 extern void apply_emulated_mount(Tracee *tracee);
 extern void apply_emulated_pivot_root(Tracee *tracee);

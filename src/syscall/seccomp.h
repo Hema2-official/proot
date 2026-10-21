@@ -23,6 +23,7 @@
 #ifndef SECCOMP_H
 #define SECCOMP_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include "syscall/sysnum.h"
@@ -40,11 +41,15 @@ typedef struct {
 /* Trace a syscall only when one of its arguments has one of a few
  * values; with any other value it goes straight to the kernel.  The
  * argument is compared as 32 bits, like the int the kernel uses for
- * ioctl(2)'s request.  */
+ * ioctl(2)'s request.  With "non_null", the argument is a pointer
+ * instead, compared whole, and the syscall is traced with
+ * "non_null_flags" unless it is NULL.  */
 typedef struct {
 	unsigned int argument;
 	size_t nb_values;
 	const ArgumentValue *values;
+	bool non_null;
+	word_t non_null_flags;
 } ArgumentFilter;
 
 typedef struct {

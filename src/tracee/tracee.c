@@ -861,6 +861,7 @@ static int attach_child(Tracee *parent, word_t clone_flags, pid_t pid)
 	 * whoever sent the request.  */
 	for (int i = 0; i < parent->fake_netlink_fds_count; i++) {
 		child->fake_netlink_fds[i].fd = parent->fake_netlink_fds[i].fd;
+		child->fake_netlink_fds[i].ino = parent->fake_netlink_fds[i].ino;
 		child->fake_netlink_fds[i].reply = NULL;
 		child->fake_netlink_fds[i].reply_len = 0;
 		child->fake_netlink_fds[i].reply_off = 0;
@@ -868,6 +869,8 @@ static int attach_child(Tracee *parent, word_t clone_flags, pid_t pid)
 	child->fake_netlink_fds_count = parent->fake_netlink_fds_count;
 	memcpy(child->netlink_route_fds, parent->netlink_route_fds,
 	       sizeof(child->netlink_route_fds));
+	memcpy(child->netlink_route_inos, parent->netlink_route_inos,
+	       sizeof(child->netlink_route_inos));
 	child->netlink_route_fds_count = parent->netlink_route_fds_count;
 
 	/* The path to the executable is unshared only once the child

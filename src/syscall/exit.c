@@ -911,6 +911,7 @@ void translate_syscall_exit(Tracee *tracee)
 							&tracee->fake_netlink_fds[tracee->fake_netlink_fds_count++];
 						memset(sock, 0, sizeof(*sock));
 						sock->fd = fd;
+						sock->ino = descriptor_inode(tracee, fd);
 					}
 				}
 			}
@@ -932,8 +933,11 @@ void translate_syscall_exit(Tracee *tracee)
 							break;
 						}
 					}
-					if (!present)
-						tracee->netlink_route_fds[tracee->netlink_route_fds_count++] = fd;
+					if (!present) {
+						int i = tracee->netlink_route_fds_count++;
+						tracee->netlink_route_fds[i] = fd;
+						tracee->netlink_route_inos[i] = descriptor_inode(tracee, fd);
+					}
 				}
 			}
 			tracee->pending_real_netlink_socket = false;

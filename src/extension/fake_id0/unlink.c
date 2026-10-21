@@ -20,6 +20,7 @@ static void remove_orphaned_meta_files(char path[PATH_MAX])
 	struct dirent *entry;
 	struct stat statl;
 	size_t tag_length = strlen(META_TAG);
+	size_t suffix_length = strlen(META_SUFFIX);
 	char entry_path[PATH_MAX];
 	int pass;
 
@@ -32,17 +33,21 @@ static void remove_orphaned_meta_files(char path[PATH_MAX])
 		rewinddir(dir);
 		while ((entry = readdir(dir)) != NULL) {
 			const char *name = entry->d_name;
+			size_t length = strlen(name);
 			int status;
 
 			if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0)
 				continue;
 
-			if (strncmp(name, META_TAG, tag_length) != 0)
+			if (length < tag_length + suffix_length
+			    || strncmp(name, META_TAG, tag_length) != 0
+			    || strcmp(name + length - suffix_length, META_SUFFIX) != 0)
 				goto end;
 
 			/* A meta file for an empty name belongs to nothing.  */
-			if (name[tag_length] != '\0') {
-				status = snprintf(entry_path, PATH_MAX, "%s/%s", path, name + tag_length);
+			if (length > tag_length + suffix_length) {
+				status = snprintf(entry_path, PATH_MAX, "%s/%.*s", path,
+						  (int) (length - tag_length - suffix_length), name + tag_length);
 				if (status < 0 || status >= PATH_MAX)
 					goto end;
 				if (lstat(entry_path, &statl) == 0 || errno != ENOENT)

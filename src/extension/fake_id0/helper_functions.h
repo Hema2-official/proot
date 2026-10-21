@@ -9,8 +9,11 @@
 
 #define IGNORE_SYSARG (Reg)2000
 
-/* The meta file of "<dir>/<name>" is "<dir>/" META_TAG "<name>". */
+/* The meta file of "<dir>/<name>" is "<dir>/" META_TAG "<name>" META_SUFFIX. The suffix keeps
+ * the original file's extension (e.g. ".hook") off the meta file, which can confuse tools that
+ * scan directories by extension (pacman/libalpm). */
 #define META_TAG ".proot-meta-file."
+#define META_SUFFIX ".meta"
 
 int check_dir_perms(Tracee *tracee, char type, char path[PATH_MAX], char rel_path[PATH_MAX], Config *config);
 

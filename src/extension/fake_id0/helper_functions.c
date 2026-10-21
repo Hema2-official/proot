@@ -302,7 +302,7 @@ int get_dir_path(char path[PATH_MAX], char dir_path[PATH_MAX])
 }
 
 /** Stores in meta_path the contents of orig_path with the addition of META_TAG
- *  to the final component.
+ *  and META_SUFFIX to the final component.
  */
 int get_meta_path(char orig_path[PATH_MAX], char meta_path[PATH_MAX]) 
 {
@@ -327,12 +327,13 @@ int get_meta_path(char orig_path[PATH_MAX], char meta_path[PATH_MAX])
 	if(strcmp(meta_path, "/") != 0)
 		strcat(meta_path, "/");
 
-	if(strlen(meta_path) + strlen(filename) + strlen(META_TAG) >= PATH_MAX)
+	if(strlen(meta_path) + strlen(META_TAG) + strlen(filename) + strlen(META_SUFFIX) >= PATH_MAX)
 		return -ENAMETOOLONG;
 
 	/* Insert the meta_tag between the path and its final component. */
 	strcat(meta_path, META_TAG);
 	strcat(meta_path, filename);
+	strcat(meta_path, META_SUFFIX);
 	return 0;
 }
 

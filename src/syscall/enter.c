@@ -2673,7 +2673,7 @@ int translate_syscall_enter(Tracee *tracee)
 			if (host_blocks_af_netlink(tracee)) {
 				word_t type = peek_reg(tracee, CURRENT, SYSARG_2);
 				poke_reg(tracee, SYSARG_1, AF_UNIX);
-				poke_reg(tracee, SYSARG_2, SOCK_DGRAM | (type & SOCK_CLOEXEC));
+				poke_reg(tracee, SYSARG_2, SOCK_DGRAM | (type & (SOCK_CLOEXEC | SOCK_NONBLOCK)));
 				poke_reg(tracee, SYSARG_3, 0);
 				tracee->pending_fake_netlink_socket = true;
 			}
